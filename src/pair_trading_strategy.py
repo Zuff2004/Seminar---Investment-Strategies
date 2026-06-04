@@ -76,7 +76,7 @@ CURRENT LIMITATIONS (TO BE WORKED ON)
 ============================================================
 1) Data leakage:
     - We used already known data (we are not really testing it in present scenarios)
-    -
+    - Divide training sets, etc --> IDEAS
 2) Transaction costs and taxes are not incurred
 '''
 #==========================================
