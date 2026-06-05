@@ -34,20 +34,17 @@ class CompanyPolicy:
 
 class CompanyPolicyEngine:
     """
-    Test version of the company-level policy engine.
+    Manual/final version of the company-level policy engine.
 
-    This class is intended for main_test.py only.
+    This engine can include manually selected companies even when they did
+    not pass the hard universe filters. However, forced inclusion does not
+    automatically assign a special defensive rule. Instead, every included
+    company is still classified through the same statistical policy rules
+    used by build_single_policy.
 
-    Difference from the production CompanyPolicyEngine:
-    - the original engine creates policies only for companies that passed
-      the universe hard filters;
-    - this test engine can force selected companies into the policy map
-      through the forced_companies argument.
-
-    This is useful for exploratory testing:
-    - the final project logic remains unchanged;
-    - main_test.py can test companies individually even when they failed
-      the universe filter.
+    This separates two decisions:
+    - hard filters decide whether a company is statistically selected;
+    - policy rules decide how aggressively the company may rotate.
     """
 
     def __init__(self, policy_settings):
@@ -75,14 +72,17 @@ class CompanyPolicyEngine:
         Builds a policy dictionary.
 
         Normal behavior:
-        - companies that passed the hard filters receive their normal policy.
+        - companies that passed the hard filters receive a policy.
 
-        Test behavior:
-        - companies listed in forced_companies also receive a policy,
-          even if they failed the hard filters.
-
-        Forced companies that failed the hard filters receive a defensive
-        exploratory policy.
+        Manual/final behavior:
+        - companies listed in forced_companies also receive a policy, even
+          if they failed the hard filters.
+        - forced companies are still classified through build_single_policy.
+          Therefore, if their training statistics match active_reversion,
+          moderate_rotation, conservative_preservation, etc., they receive
+          that policy instead of an artificial forced policy.
+        - if their statistics are weak or missing, build_single_policy falls
+          back to defensive_rotation.
         """
 
         required_columns = [
@@ -119,23 +119,22 @@ class CompanyPolicyEngine:
             company = row["pair"]
             passed_hard_filters = bool(row["passed_hard_filters"])
 
+            policy = self.build_single_policy(
+                company=company,
+                correlation=row["correlation"],
+                spread_volatility=row["spread_volatility"],
+                cointegration_pvalue=row["cointegration_pvalue"],
+                adf_pvalue=row["adf_pvalue"],
+                quality_score=row["quality_score"],
+            )
+
             if not passed_hard_filters and company in forced_companies:
-                policy = self.build_forced_manual_test_policy(
-                    company=company,
-                    correlation=row["correlation"],
-                    spread_volatility=row["spread_volatility"],
-                    cointegration_pvalue=row["cointegration_pvalue"],
-                    adf_pvalue=row["adf_pvalue"],
-                    quality_score=row["quality_score"],
-                )
-            else:
-                policy = self.build_single_policy(
-                    company=company,
-                    correlation=row["correlation"],
-                    spread_volatility=row["spread_volatility"],
-                    cointegration_pvalue=row["cointegration_pvalue"],
-                    adf_pvalue=row["adf_pvalue"],
-                    quality_score=row["quality_score"],
+                policy.explanation = (
+                    "Company was manually included in the final fundamental "
+                    "portfolio even though it did not pass all hard universe "
+                    "filters. The policy group itself was still assigned by "
+                    "the standard training-sample rule engine. "
+                    + policy.explanation
                 )
 
             policy_map[company] = policy
@@ -180,53 +179,20 @@ class CompanyPolicyEngine:
         quality_score: float,
     ) -> CompanyPolicy:
         """
-        Builds a defensive exploratory policy for companies forced into
-        main_test.py even though they failed the hard filters.
+        Backward-compatible wrapper.
 
-        This policy is intentionally conservative:
-        - it stays close to 50/50;
-        - it only reacts to larger deviations;
-        - it avoids giving weak pairs an aggressive rotation rule.
+        Older versions assigned every forced company to
+        forced_manual_test_defensive. This is no longer used. Forced companies
+        are classified with the normal policy rules instead.
         """
 
-        correlation = self._safe_number(correlation, fallback=0.0)
-        spread_volatility = self._safe_number(spread_volatility, fallback=0.0)
-
-        cointegration_pvalue = self._safe_number(
-            cointegration_pvalue,
-            fallback=1.0,
-        )
-
-        adf_pvalue = self._safe_number(
-            adf_pvalue,
-            fallback=1.0,
-        )
-
-        quality_score = self._safe_number(
-            quality_score,
-            fallback=0.0,
-        )
-
-        return CompanyPolicy(
+        return self.build_single_policy(
             company=company,
-            policy_group="forced_manual_test_defensive",
-            min_weight_on=0.45,
-            max_weight_on=0.55,
-            entry_threshold=2.50,
-            exit_threshold=0.20,
-            signal_window=252,
-            allow_tax_loss_harvesting=True,
-            explanation=(
-                "Company was manually forced into the exploratory test even "
-                "though it did not pass the hard universe filters. The strategy "
-                "uses a defensive rule close to 50/50 to avoid giving weak or "
-                "unclear ON/PN evidence an aggressive rotation policy. "
-                f"Training statistics: correlation={correlation:.4f}, "
-                f"spread_volatility={spread_volatility:.4f}, "
-                f"cointegration_pvalue={cointegration_pvalue:.4f}, "
-                f"adf_pvalue={adf_pvalue:.4f}, "
-                f"quality_score={quality_score:.4f}."
-            ),
+            correlation=correlation,
+            spread_volatility=spread_volatility,
+            cointegration_pvalue=cointegration_pvalue,
+            adf_pvalue=adf_pvalue,
+            quality_score=quality_score,
         )
 
     def build_single_policy(
@@ -320,7 +286,7 @@ class CompanyPolicyEngine:
                 policy_group="conservative_preservation",
                 min_weight_on=0.49,
                 max_weight_on=0.51,
-                entry_threshold=3.5,
+                entry_threshold=3.0,
                 exit_threshold=1.0,
                 signal_window=252,
                 allow_tax_loss_harvesting=True,
@@ -469,10 +435,10 @@ class CompanyPolicyEngine:
         return CompanyPolicy(
             company=company,
             policy_group="defensive_rotation",
-            min_weight_on=0.45,
-            max_weight_on=0.55,
-            entry_threshold=2.50,
-            exit_threshold=0.20,
+            min_weight_on=0.3,
+            max_weight_on=0.7,
+            entry_threshold=1.50,
+            exit_threshold=0.10,
             signal_window=252,
             allow_tax_loss_harvesting=True,
             explanation=(

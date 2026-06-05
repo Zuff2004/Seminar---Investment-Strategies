@@ -25,6 +25,8 @@ class ShareClassRotationBacktester:
         minimum_rebalance_difference: float = 0.025,
         include_transaction_costs_in_tax_basis: bool = True,
         use_loss_carryforward: bool = True,
+        execution_start_date: str | pd.Timestamp | None = "2020-01-01",
+        execution_end_date: str | pd.Timestamp | None = "2025-12-31",
     ):
         """
         Initializes the backtester.
@@ -49,6 +51,14 @@ class ShareClassRotationBacktester:
 
         use_loss_carryforward:
             If True, realized losses can offset future realized gains.
+
+        execution_start_date:
+            First date on which the portfolio is actually executed and
+            performance is measured. Signal columns may be calculated with
+            earlier training data, but the backtest starts here.
+
+        execution_end_date:
+            Last date included in the measured out-of-sample backtest.
         """
 
         self.initial_capital = float(initial_capital)
@@ -59,6 +69,16 @@ class ShareClassRotationBacktester:
             include_transaction_costs_in_tax_basis
         )
         self.use_loss_carryforward = bool(use_loss_carryforward)
+        self.execution_start_date = (
+            pd.Timestamp(execution_start_date)
+            if execution_start_date is not None
+            else None
+        )
+        self.execution_end_date = (
+            pd.Timestamp(execution_end_date)
+            if execution_end_date is not None
+            else None
+        )
 
     # ============================================================
     # Main backtest
@@ -111,6 +131,30 @@ class ShareClassRotationBacktester:
 
         if df.empty:
             raise ValueError("Backtest data is empty.")
+
+        # ------------------------------------------------------------
+        # Critical train/test date correction
+        # ------------------------------------------------------------
+        # The input data may include the training period so that rolling
+        # signal columns in early 2020 can be calculated with pre-2020
+        # history. However, the portfolio must be initialized and measured
+        # only in the out-of-sample execution period.
+        #
+        # Therefore, we slice only here, after the external signal pipeline
+        # has already created target_weight_on / target_weight_pn using the
+        # full train + test history.
+        # ------------------------------------------------------------
+
+        if self.execution_start_date is not None:
+            df = df.loc[df.index >= self.execution_start_date]
+
+        if self.execution_end_date is not None:
+            df = df.loc[df.index <= self.execution_end_date]
+
+        if df.empty:
+            raise ValueError(
+                "Backtest data is empty after applying execution date window."
+            )
 
         tax_account = IndividualTaxAccount(
             tax_rate=self.tax_rate,
