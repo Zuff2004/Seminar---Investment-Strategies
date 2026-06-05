@@ -10,6 +10,7 @@ from rotation_signal_engine import RotationSignalEngine
 from share_class_rotation_backtester import ShareClassRotationBacktester
 from benchmarks import BenchmarkBuilder
 from individual_comparison import IndividualComparisonBuilder
+from plot_builder import PlotBuilder
 
 
 def build_pair_objects(config: ProjectConfig) -> list:
@@ -323,6 +324,43 @@ def run_individual_backtests(
     return individual_comparisons, metrics_table
 
 
+def build_individual_plots(
+    config: ProjectConfig,
+    individual_comparisons: dict,
+) -> list:
+    """
+    Builds and saves all individual company plots.
+
+    The plots are saved in:
+    final_results/plots
+
+    Main plots:
+    - cumulative returns;
+    - equity values;
+    - excess returns;
+    - ON weight through time;
+    - spread z-score and signals.
+    """
+
+    if not individual_comparisons:
+        print("\nNo individual comparisons available for plotting.")
+        return []
+
+    plot_builder = PlotBuilder(
+        plots_dir=config.paths.plots_dir,
+    )
+
+    saved_plot_paths = plot_builder.build_all_individual_plots(
+        individual_comparisons=individual_comparisons,
+    )
+
+    print("\nIndividual plots completed.")
+    print(f"Saved plots: {len(saved_plot_paths)}")
+    print(f"Plots folder: {config.paths.plots_dir}")
+
+    return saved_plot_paths
+
+
 def print_final_summary(metrics_table: pd.DataFrame):
     """
     Prints a readable final summary in the terminal.
@@ -417,6 +455,7 @@ def main():
     - universe filter report;
     - company policy map;
     - individual strategy vs 50/50 vs Ibovespa CSVs;
+    - individual company plots;
     - final company-level metrics table.
 
     The aggregate portfolio is intentionally not used yet.
@@ -489,7 +528,7 @@ def main():
     # 5. Run individual test-period backtests.
     # ------------------------------------------------------------
 
-    _, metrics_table = run_individual_backtests(
+    individual_comparisons, metrics_table = run_individual_backtests(
         config=config,
         selected_pairs=selected_pairs,
         test_data_by_company=test_data_by_company,
@@ -497,13 +536,23 @@ def main():
     )
 
     # ------------------------------------------------------------
-    # 6. Print final terminal summary.
+    # 6. Build individual company plots.
+    # ------------------------------------------------------------
+
+    build_individual_plots(
+        config=config,
+        individual_comparisons=individual_comparisons,
+    )
+
+    # ------------------------------------------------------------
+    # 7. Print final terminal summary.
     # ------------------------------------------------------------
 
     print_final_summary(metrics_table)
 
     print("\nProject completed successfully.")
     print(f"Results folder: {config.paths.results_dir}")
+    print(f"Plots folder: {config.paths.plots_dir}")
 
 
 if __name__ == "__main__":

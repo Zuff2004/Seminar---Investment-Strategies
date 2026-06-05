@@ -85,7 +85,7 @@ class BacktestSettings:
     """
 
     start_date: str = "2010-01-05"
-    end_date: str = "2024-12-31"
+    end_date: str = "2025-12-31"
 
     download_data: bool = False
 
