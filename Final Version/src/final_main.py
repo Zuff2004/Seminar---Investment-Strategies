@@ -1578,6 +1578,355 @@ def build_final_portfolio_with_portfolio_level_tax(
     return portfolio_comparison, tax_table, weights_table
 
 
+
+# ============================================================
+# Statistical-only equal-weighted portfolio with portfolio-level tax
+# ============================================================
+
+def build_statistical_equal_weight_portfolio_with_portfolio_level_tax(
+    config: ProjectConfig,
+    statistical_individual_comparisons: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Builds a statistical-only equal-weighted portfolio with portfolio-level tax.
+
+    This function is intentionally separate from the final portfolio builder.
+
+    It does NOT change:
+    - the final strategy portfolio;
+    - the final 50/50 benchmark;
+    - the final Ibovespa benchmark;
+    - any existing final portfolio output file.
+
+    It creates an additional diagnostic benchmark:
+    - statistical-only companies;
+    - equal company weights at inception;
+    - no rebalancing back to equal weights;
+    - individual tax disabled before this function is called;
+    - tax calculated once at the aggregated statistical portfolio level;
+    - tax paid on the last available trading day of the following month;
+    - after-tax curve applied recursively as a cash outflow.
+    """
+
+    if not statistical_individual_comparisons:
+        raise ValueError("No statistical individual comparisons available.")
+
+    available_companies = [
+        company
+        for company, comparison in statistical_individual_comparisons.items()
+        if comparison is not None
+        and not comparison.empty
+        and "strategy_value" in comparison.columns
+    ]
+
+    if not available_companies:
+        raise ValueError(
+            "No statistical individual comparisons with strategy_value available."
+        )
+
+    equal_weight = 1.0 / len(available_companies)
+
+    statistical_weights = {
+        company: equal_weight
+        for company in available_companies
+    }
+
+    weights_table = pd.DataFrame(
+        [
+            {
+                "company": company,
+                "initial_portfolio_weight": weight,
+            }
+            for company, weight in statistical_weights.items()
+        ]
+    )
+
+    weights_output_path = (
+        config.paths.tables_dir
+        / "statistical_equal_weight_initial_weights.csv"
+    )
+
+    weights_table.to_csv(weights_output_path, index=False)
+
+    print(
+        "\nSaved statistical equal-weight initial weights to: "
+        f"{weights_output_path}"
+    )
+
+    common_index = build_fixed_portfolio_test_index(
+        individual_comparisons=statistical_individual_comparisons,
+        start_date=config.backtest.test_start_date,
+        end_date=config.backtest.end_date,
+    )
+
+    # ------------------------------------------------------------
+    # 1. Statistical-only strategy portfolio before portfolio tax.
+    # ------------------------------------------------------------
+
+    statistical_pre_tax = build_initial_weight_buy_and_hold_curve(
+        individual_comparisons=statistical_individual_comparisons,
+        weights=statistical_weights,
+        value_column="strategy_value",
+        output_name="statistical_equal_weight_pre_tax",
+        common_index=common_index,
+    )
+
+    # ------------------------------------------------------------
+    # 2. Statistical-only passive 50/50 benchmark.
+    # ------------------------------------------------------------
+
+    statistical_50_50 = build_initial_weight_buy_and_hold_curve(
+        individual_comparisons=statistical_individual_comparisons,
+        weights=statistical_weights,
+        value_column="benchmark_50_50_value",
+        output_name="statistical_equal_weight_50_50",
+        common_index=common_index,
+    )
+
+    # ------------------------------------------------------------
+    # 3. Ibovespa curve for the same statistical-only dates.
+    # ------------------------------------------------------------
+
+    statistical_ibovespa = build_initial_weight_buy_and_hold_curve(
+        individual_comparisons=statistical_individual_comparisons,
+        weights=statistical_weights,
+        value_column="ibovespa_value",
+        output_name="statistical_equal_weight_ibovespa",
+        common_index=common_index,
+    )
+
+    # ------------------------------------------------------------
+    # 4. Weighted daily tax inputs for statistical-only portfolio.
+    # ------------------------------------------------------------
+
+    daily_tax_inputs = build_weighted_daily_tax_inputs(
+        individual_comparisons=statistical_individual_comparisons,
+        weights=statistical_weights,
+        common_index=common_index,
+    )
+
+    daily_tax_inputs_output_path = (
+        config.paths.tables_dir
+        / "statistical_equal_weight_daily_tax_inputs.csv"
+    )
+
+    daily_tax_inputs.to_csv(daily_tax_inputs_output_path, index=True)
+
+    print(
+        "Saved statistical equal-weight daily tax inputs to: "
+        f"{daily_tax_inputs_output_path}"
+    )
+
+    # ------------------------------------------------------------
+    # 5. Monthly tax at portfolio level.
+    # ------------------------------------------------------------
+
+    tax_table = calculate_portfolio_level_monthly_tax_with_payment_lag(
+        daily_tax_inputs=daily_tax_inputs,
+        tax_rate=config.backtest.original_income_tax_rate,
+        use_loss_carryforward=config.backtest.use_loss_carryforward,
+    )
+
+    tax_output_path = (
+        config.paths.tables_dir
+        / "statistical_equal_weight_monthly_tax_records.csv"
+    )
+
+    tax_table.to_csv(tax_output_path, index=False)
+
+    print(
+        "Saved statistical equal-weight monthly tax records to: "
+        f"{tax_output_path}"
+    )
+
+    # ------------------------------------------------------------
+    # 6. Combine curves and apply tax recursively.
+    # ------------------------------------------------------------
+
+    statistical_comparison = pd.concat(
+        [
+            statistical_pre_tax,
+            statistical_50_50,
+            statistical_ibovespa,
+            daily_tax_inputs.add_prefix("statistical_daily_"),
+        ],
+        axis=1,
+        join="inner",
+    ).sort_index()
+
+    if statistical_comparison.empty:
+        raise ValueError("Statistical equal-weight comparison is empty.")
+
+    statistical_comparison["portfolio_tax_paid"] = 0.0
+
+    if tax_table is not None and not tax_table.empty:
+        for _, tax_row in tax_table.iterrows():
+            payment_date = tax_row["tax_payment_date"]
+
+            if pd.isna(payment_date):
+                continue
+
+            payment_date = pd.Timestamp(payment_date)
+
+            if payment_date in statistical_comparison.index:
+                statistical_comparison.loc[
+                    payment_date,
+                    "portfolio_tax_paid",
+                ] += float(tax_row["tax_due"])
+
+    statistical_comparison["portfolio_cumulative_tax_paid"] = (
+        statistical_comparison["portfolio_tax_paid"].cumsum()
+    )
+
+    # Reuse the same recursive after-tax logic by temporarily renaming columns.
+    tax_application_input = statistical_comparison.rename(
+        columns={
+            "statistical_equal_weight_pre_tax_value": (
+                "strategy_portfolio_pre_tax_value"
+            ),
+            "statistical_equal_weight_pre_tax_return": (
+                "strategy_portfolio_pre_tax_return"
+            ),
+        }
+    ).copy()
+
+    tax_application_output = apply_portfolio_tax_recursively(
+        portfolio_comparison=tax_application_input,
+    )
+
+    statistical_comparison["statistical_equal_weight_value"] = (
+        tax_application_output["strategy_portfolio_value"]
+    )
+
+    statistical_comparison["statistical_equal_weight_return"] = (
+        tax_application_output["strategy_portfolio_return"]
+    )
+
+    statistical_comparison["statistical_equal_weight_cumulative_return"] = (
+        tax_application_output["strategy_portfolio_cumulative_return"]
+    )
+
+    statistical_comparison["statistical_equal_weight_minus_50_50"] = (
+        statistical_comparison["statistical_equal_weight_cumulative_return"]
+        - statistical_comparison[
+            "statistical_equal_weight_50_50_cumulative_return"
+        ]
+    )
+
+    statistical_comparison["statistical_equal_weight_minus_ibovespa"] = (
+        statistical_comparison["statistical_equal_weight_cumulative_return"]
+        - statistical_comparison[
+            "statistical_equal_weight_ibovespa_cumulative_return"
+        ]
+    )
+
+    comparison_output_path = (
+        config.paths.tables_dir
+        / "statistical_equal_weight_comparison_portfolio_level_tax.csv"
+    )
+
+    statistical_comparison.to_csv(comparison_output_path, index=True)
+
+    print(
+        "Saved statistical equal-weight comparison with portfolio-level tax to: "
+        f"{comparison_output_path}"
+    )
+
+    return statistical_comparison, tax_table, weights_table
+
+
+def add_statistical_equal_weight_benchmark_to_final_portfolio_plots(
+    config: ProjectConfig,
+    portfolio_comparison: pd.DataFrame,
+    statistical_comparison: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Adds the statistical-only equal-weighted benchmark to the final portfolio
+    comparison used by the plot builder.
+
+    This only adds extra columns for plotting and comparison.
+    It does not alter the existing strategy, 50/50 benchmark, Ibovespa curve,
+    tax records, or metrics.
+    """
+
+    if portfolio_comparison is None or portfolio_comparison.empty:
+        raise ValueError("portfolio_comparison is empty.")
+
+    if statistical_comparison is None or statistical_comparison.empty:
+        print(
+            "\nSkipping statistical-only benchmark in final plots: "
+            "statistical comparison is empty."
+        )
+        return portfolio_comparison
+
+    required_columns = [
+        "statistical_equal_weight_value",
+        "statistical_equal_weight_return",
+        "statistical_equal_weight_cumulative_return",
+    ]
+
+    for column in required_columns:
+        if column not in statistical_comparison.columns:
+            raise ValueError(
+                f"Missing column in statistical comparison: {column}"
+            )
+
+    aligned = statistical_comparison[required_columns].copy()
+    aligned = aligned.reindex(portfolio_comparison.index)
+    aligned = aligned.ffill()
+
+    if aligned["statistical_equal_weight_value"].isna().any():
+        aligned["statistical_equal_weight_value"] = (
+            aligned["statistical_equal_weight_value"].fillna(1.0)
+        )
+
+    if aligned["statistical_equal_weight_cumulative_return"].isna().any():
+        aligned["statistical_equal_weight_cumulative_return"] = (
+            aligned["statistical_equal_weight_cumulative_return"].fillna(0.0)
+        )
+
+    if aligned["statistical_equal_weight_return"].isna().any():
+        aligned["statistical_equal_weight_return"] = (
+            aligned["statistical_equal_weight_return"].fillna(0.0)
+        )
+
+    portfolio_comparison = portfolio_comparison.copy()
+
+    portfolio_comparison["statistical_equal_weight_portfolio_value"] = (
+        aligned["statistical_equal_weight_value"]
+    )
+
+    portfolio_comparison["statistical_equal_weight_portfolio_return"] = (
+        aligned["statistical_equal_weight_return"]
+    )
+
+    portfolio_comparison["statistical_equal_weight_portfolio_cumulative_return"] = (
+        aligned["statistical_equal_weight_cumulative_return"]
+    )
+
+    portfolio_comparison["strategy_minus_statistical_equal_weight"] = (
+        portfolio_comparison["strategy_portfolio_cumulative_return"]
+        - portfolio_comparison[
+            "statistical_equal_weight_portfolio_cumulative_return"
+        ]
+    )
+
+    extended_output_path = (
+        config.paths.tables_dir
+        / "final_portfolio_comparison_extended_with_statistical_benchmark.csv"
+    )
+
+    portfolio_comparison.to_csv(extended_output_path, index=True)
+
+    print(
+        "\nAdded statistical-only equal-weighted after-tax benchmark "
+        "to final portfolio comparison."
+    )
+    print(f"Saved extended final comparison to: {extended_output_path}")
+
+    return portfolio_comparison
+
+
 # ============================================================
 # Final portfolio metrics
 # ============================================================
@@ -1884,6 +2233,7 @@ def main():
 
     config.backtest.download_data = True
     original_income_tax_rate = config.backtest.income_tax_rate
+    config.backtest.original_income_tax_rate = original_income_tax_rate
     original_company_pairs = dict(config.universe.company_pairs)
 
     print("\nBacktest configuration")
@@ -1963,6 +2313,41 @@ def main():
 
     print("\nStatistical-filtering individual summary")
     print_final_summary(statistical_metrics_table)
+
+    # ============================================================
+    # PART 1B — STATISTICAL-FILTERING PORTFOLIO-TAX INPUTS
+    # ============================================================
+    # This block does not replace PART 1.
+    # It creates a separate statistical-only benchmark with:
+    # - equal weights at inception;
+    # - individual tax disabled;
+    # - portfolio-level monthly tax applied later.
+    # ============================================================
+
+    print("\nPART 1B — Statistical-only equal-weighted benchmark inputs")
+    print("=" * 120)
+
+    config.backtest.income_tax_rate = 0.0
+
+    statistical_portfolio_tax_input_comparisons, statistical_portfolio_tax_input_metrics = (
+        run_individual_backtests_generic(
+            config=config,
+            selected_pairs=statistical_selected_pairs,
+            signal_data_by_company=statistical_signal_history_data_by_company,
+            execution_data_by_company=statistical_test_data_by_company,
+            policy_map=statistical_policy_map,
+            file_prefix="statistical_equal_weight_portfolio_tax_input",
+            metrics_filename=(
+                "statistical_equal_weight_portfolio_tax_input_"
+                "individual_strategy_vs_benchmarks.csv"
+            ),
+        )
+    )
+
+    print("\nStatistical-only portfolio-tax input summary")
+    print_final_summary(statistical_portfolio_tax_input_metrics)
+
+    config.backtest.income_tax_rate = original_income_tax_rate
 
     # ============================================================
     # PART 2 — FINAL MANUAL/WEIGHTED PORTFOLIO INPUTS
@@ -2094,6 +2479,23 @@ def main():
             config=config,
             individual_comparisons=final_individual_comparisons,
             weights=final_portfolio_weights,
+        )
+    )
+
+    statistical_equal_weight_comparison, statistical_equal_weight_tax_table, statistical_equal_weight_weights_table = (
+        build_statistical_equal_weight_portfolio_with_portfolio_level_tax(
+            config=config,
+            statistical_individual_comparisons=(
+                statistical_portfolio_tax_input_comparisons
+            ),
+        )
+    )
+
+    portfolio_comparison = (
+        add_statistical_equal_weight_benchmark_to_final_portfolio_plots(
+            config=config,
+            portfolio_comparison=portfolio_comparison,
+            statistical_comparison=statistical_equal_weight_comparison,
         )
     )
 
