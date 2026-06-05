@@ -36,17 +36,19 @@ class CompanyPolicyEngine:
     """
     Builds company-level policies using only training-sample statistics.
 
-    This class avoids direct company-name rules.
+    This class is used for both:
 
-    The classification is based on:
-    - ON/PN return correlation;
-    - spread volatility;
-    - cointegration p-value;
-    - ADF p-value;
-    - quality score.
+    1. Statistical-filtering results:
+       - only companies that passed the hard filters receive a policy.
 
-    This makes the strategy more defensible because the policy is not selected
-    using test-period performance.
+    2. Final manual/fundamental-weighted portfolio:
+       - companies that passed the hard filters receive normal statistical
+         policies;
+       - companies manually forced into the final portfolio but that did not
+         pass the hard filters receive forced_default_rotation.
+
+    This avoids mixing statistically selected defensive_rotation companies
+    with manually forced companies.
     """
 
     def __init__(self, policy_settings):
@@ -68,14 +70,30 @@ class CompanyPolicyEngine:
     def build_policy_map(
         self,
         filter_report: pd.DataFrame,
+        forced_companies: list | set | tuple | None = None,
     ) -> dict:
         """
-        Builds a policy dictionary for all companies that passed the filters.
+        Builds a policy dictionary.
+
+        Normal statistical behavior:
+        - if forced_companies is None, only companies that passed hard filters
+          receive a policy.
+
+        Final/manual portfolio behavior:
+        - if forced_companies is provided, companies in that list are allowed
+          into the policy map even if they did not pass the hard filters;
+        - companies that passed hard filters receive a normal statistical policy;
+        - companies that did not pass hard filters but were forced receive
+          forced_default_rotation.
 
         Parameters
         ----------
         filter_report:
-            DataFrame created by the universe filter.
+            DataFrame created by UniverseFilter.
+
+        forced_companies:
+            Optional list/set/tuple of companies manually included in the final
+            portfolio.
 
         Returns
         -------
@@ -97,23 +115,76 @@ class CompanyPolicyEngine:
             if column not in filter_report.columns:
                 raise ValueError(f"Missing column in filter report: {column}")
 
-        policy_map = {}
+        report = filter_report.copy()
+        report["pair"] = report["pair"].astype(str).str.upper()
 
-        selected_report = filter_report[
-            filter_report["passed_hard_filters"] == True
-        ].copy()
+        forced_companies = set(forced_companies or [])
+        forced_companies = {
+            str(company).upper()
+            for company in forced_companies
+        }
+
+        # ------------------------------------------------------------
+        # Case 1:
+        # Normal statistical pipeline.
+        # Only companies that passed hard filters are selected.
+        # ------------------------------------------------------------
+
+        if not forced_companies:
+            selected_report = report[
+                report["passed_hard_filters"] == True
+            ].copy()
+
+        # ------------------------------------------------------------
+        # Case 2:
+        # Final manual/fundamental portfolio.
+        # Keep companies that passed hard filters OR were manually forced.
+        # ------------------------------------------------------------
+
+        else:
+            selected_report = report[
+                (report["passed_hard_filters"] == True)
+                | (report["pair"].isin(forced_companies))
+            ].copy()
+
+        policy_map = {}
 
         for _, row in selected_report.iterrows():
             company = row["pair"]
+            passed_hard_filters = bool(row["passed_hard_filters"])
 
-            policy = self.build_single_policy(
-                company=company,
-                correlation=row["correlation"],
-                spread_volatility=row["spread_volatility"],
-                cointegration_pvalue=row["cointegration_pvalue"],
-                adf_pvalue=row["adf_pvalue"],
-                quality_score=row["quality_score"],
-            )
+            # --------------------------------------------------------
+            # Companies that passed hard filters:
+            # receive normal statistical policy.
+            # --------------------------------------------------------
+
+            if passed_hard_filters:
+                policy = self.build_single_policy(
+                    company=company,
+                    correlation=row["correlation"],
+                    spread_volatility=row["spread_volatility"],
+                    cointegration_pvalue=row["cointegration_pvalue"],
+                    adf_pvalue=row["adf_pvalue"],
+                    quality_score=row["quality_score"],
+                )
+
+            # --------------------------------------------------------
+            # Companies manually included but not statistically selected:
+            # receive separate forced default policy.
+            # --------------------------------------------------------
+
+            elif company in forced_companies:
+                policy = self.build_forced_default_policy(
+                    company=company,
+                    correlation=row["correlation"],
+                    spread_volatility=row["spread_volatility"],
+                    cointegration_pvalue=row["cointegration_pvalue"],
+                    adf_pvalue=row["adf_pvalue"],
+                    quality_score=row["quality_score"],
+                )
+
+            else:
+                continue
 
             policy_map[company] = policy
 
@@ -126,8 +197,8 @@ class CompanyPolicyEngine:
         """
         Converts the policy map into a table that can be saved as CSV.
 
-        This table is useful for the final report because it documents
-        which statistical rule was assigned to each company.
+        This table documents which statistical/forced rule was assigned to
+        each company.
         """
 
         rows = []
@@ -145,7 +216,16 @@ class CompanyPolicyEngine:
                 "explanation": policy.explanation,
             })
 
-        return pd.DataFrame(rows)
+        policy_table = pd.DataFrame(rows)
+
+        if not policy_table.empty:
+            policy_table = policy_table.sort_values("company").reset_index(drop=True)
+
+        return policy_table
+
+    # ============================================================
+    # Normal statistical policy rules
+    # ============================================================
 
     def build_single_policy(
         self,
@@ -158,16 +238,32 @@ class CompanyPolicyEngine:
     ) -> CompanyPolicy:
         """
         Builds one policy from training-sample statistical indicators.
+
+        This method is intended for companies that passed the hard statistical
+        filters.
         """
 
         correlation = self._safe_number(correlation, fallback=0.0)
-        spread_volatility = self._safe_number(spread_volatility, fallback=0.0)
+
+        spread_volatility = self._safe_number(
+            spread_volatility,
+            fallback=0.0,
+        )
+
         cointegration_pvalue = self._safe_number(
             cointegration_pvalue,
             fallback=1.0,
         )
-        adf_pvalue = self._safe_number(adf_pvalue, fallback=1.0)
-        quality_score = self._safe_number(quality_score, fallback=0.0)
+
+        adf_pvalue = self._safe_number(
+            adf_pvalue,
+            fallback=1.0,
+        )
+
+        quality_score = self._safe_number(
+            quality_score,
+            fallback=0.0,
+        )
 
         strong_relation = (
             correlation >= self.settings.strong_correlation_threshold
@@ -220,7 +316,7 @@ class CompanyPolicyEngine:
         # Economic interpretation:
         # The two share classes move together, but the spread does not show
         # reliable reversion. Therefore, aggressive rotation may damage returns.
-        # The strategy stays close to 50/50.
+        # The strategy stays extremely close to 50/50.
         # ============================================================
 
         if strong_relation and weak_reversion:
@@ -236,7 +332,7 @@ class CompanyPolicyEngine:
                 explanation=(
                     "Strong ON/PN relation but weak mean-reversion evidence. "
                     "The strategy preserves company-level exposure and remains "
-                    "close to the passive 50/50 allocation."
+                    "very close to the passive 50/50 allocation."
                 ),
             )
 
@@ -324,7 +420,7 @@ class CompanyPolicyEngine:
         #
         # Economic interpretation:
         # Stable pairs can still offer opportunities, but the strategy should
-        # wait for stronger deviations.
+        # wait for stronger deviations and stay close to 50/50.
         # ============================================================
 
         if strong_relation and high_quality:
@@ -344,7 +440,7 @@ class CompanyPolicyEngine:
             )
 
         # ============================================================
-        # 6. Medium-quality fallback
+        # 6. Medium-quality defensive rotation
         # ============================================================
         # The pair is not strong enough for active rotation, but it is not
         # completely unusable.
@@ -369,24 +465,100 @@ class CompanyPolicyEngine:
         # ============================================================
         # 7. Defensive fallback
         # ============================================================
-        # Weak or unclear evidence.
+        # Weak or unclear evidence, but the company still passed hard filters.
         #
         # Economic interpretation:
-        # Stay almost passive and avoid unnecessary turnover.
+        # Stay close to the passive benchmark and avoid excessive turnover.
         # ============================================================
 
         return CompanyPolicy(
             company=company,
             policy_group="defensive_rotation",
-            min_weight_on=0.45,
-            max_weight_on=0.55,
-            entry_threshold=2.50,
-            exit_threshold=0.20,
+            min_weight_on=0.475,
+            max_weight_on=0.525,
+            entry_threshold=1.0,
+            exit_threshold=0.5,
             signal_window=252,
             allow_tax_loss_harvesting=True,
             explanation=(
-                "Weak or unclear statistical evidence. The strategy stays close "
-                "to the passive 50/50 benchmark."
+                "Company passed the hard statistical filters, but the evidence "
+                "was not strong enough for a more aggressive rule. The strategy "
+                "uses a defensive rotation band around the passive 50/50 benchmark."
+            ),
+        )
+
+    # ============================================================
+    # Forced/default policy for manual portfolio companies
+    # ============================================================
+
+    def build_forced_default_policy(
+        self,
+        company: str,
+        correlation: float,
+        spread_volatility: float,
+        cointegration_pvalue: float,
+        adf_pvalue: float,
+        quality_score: float,
+    ) -> CompanyPolicy:
+        """
+        Builds the default policy for companies manually included in the final
+        fundamental-weighted portfolio but not selected by the hard statistical
+        filters.
+
+        Economic interpretation:
+        - the company is included for portfolio construction/fundamental reasons;
+        - the ON/PN statistical evidence was not strong enough to pass the hard
+          universe filters;
+        - therefore, the strategy can rotate, but only inside a conservative
+          allocation band and only after stronger deviations.
+
+        This policy is intentionally separate from defensive_rotation.
+        """
+
+        correlation = self._safe_number(correlation, fallback=0.0)
+
+        spread_volatility = self._safe_number(
+            spread_volatility,
+            fallback=0.0,
+        )
+
+        cointegration_pvalue = self._safe_number(
+            cointegration_pvalue,
+            fallback=1.0,
+        )
+
+        adf_pvalue = self._safe_number(
+            adf_pvalue,
+            fallback=1.0,
+        )
+
+        quality_score = self._safe_number(
+            quality_score,
+            fallback=0.0,
+        )
+
+        return CompanyPolicy(
+            company=company,
+            policy_group="forced_default_rotation",
+
+            # Conservative band for manually included companies.
+            # These companies did not pass the hard statistical filters.
+            min_weight_on=0.0,
+            max_weight_on=1.0,
+
+            # Stronger entry requirement than normal defensive rotation.
+            entry_threshold=1.0,
+            exit_threshold=0.25,
+
+            signal_window=252,
+            allow_tax_loss_harvesting=True,
+
+            explanation=(
+                "Company was manually included in the final fundamental-weighted "
+                "portfolio despite not passing the hard statistical universe "
+                "filters. It therefore receives forced_default_rotation: a "
+                "separate conservative rule that keeps the ON/PN allocation close "
+                "to 50/50 and requires stronger spread deviations before trading."
             ),
         )
 

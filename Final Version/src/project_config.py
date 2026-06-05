@@ -84,12 +84,16 @@ class BacktestSettings:
     optimized separately for each pair using test-period performance.
     """
 
-    start_date: str = "2010-01-05"
+    start_date: str = "2010-01-06"
     end_date: str = "2025-12-31"
 
-    download_data: bool = False
+    # Fixed out-of-sample period.
+    # The training period uses all available observations before this date.
+    # The test/backtest period starts at the first available trading day
+    # on or after this date.
+    test_start_date: str = "2020-01-01"
 
-    train_ratio: float = 2 / 3
+    download_data: bool = False
 
     initial_capital_per_pair: float = 1.0
 

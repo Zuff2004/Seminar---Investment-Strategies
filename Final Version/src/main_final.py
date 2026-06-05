@@ -632,8 +632,8 @@ def build_final_portfolio_with_portfolio_level_tax(
 
     common_index = build_fixed_portfolio_test_index(
         individual_comparisons=individual_comparisons,
-        start_date="2020-01-01",
-        end_date="2025-12-31",
+        start_date=config.backtest.test_start_date,
+        end_date=config.backtest.end_date,
     )
 
     # ------------------------------------------------------------
@@ -1167,8 +1167,8 @@ def main():
     print(f"\nSaved final portfolio train-test split summary to: {split_summary_path}")
 
     print("\nFixed train-test split:")
-    print("Train: from available start date, usually 2010-01-06, to 2019-12-31")
-    print("Test:  from first 2020 trading day, usually 2020-01-02, to 2025-12-31")
+    print(f"Train: from available start date to before {config.backtest.test_start_date}")
+    print(f"Test:  from first trading day on or after {config.backtest.test_start_date} to {config.backtest.end_date}")
     print("Signals in the test period can use rolling history from the training period.")
 
     # ------------------------------------------------------------

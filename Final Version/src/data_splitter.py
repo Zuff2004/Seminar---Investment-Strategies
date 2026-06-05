@@ -8,30 +8,32 @@ class TimeSeriesSplitter:
     Financial data must never be randomly shuffled because future information
     cannot be used to calibrate past decisions.
 
-    Therefore:
-    - the training sample contains the oldest observations;
-    - the test sample contains the most recent observations.
+    In this project, the split is based on a fixed out-of-sample start date:
+
+    - the training sample contains all observations before test_start_date;
+    - the test sample contains all observations on or after test_start_date.
+
+    This ensures that all companies use the same out-of-sample period whenever
+    data is available.
     """
 
-    def __init__(self, train_ratio: float = 2 / 3):
+    def __init__(self, test_start_date: str = "2020-01-01"):
         """
         Initializes the splitter.
 
         Parameters
         ----------
-        train_ratio:
-            Fraction of observations assigned to the training sample.
-            The remaining observations are assigned to the test sample.
+        test_start_date:
+            First calendar date assigned to the test/backtest sample.
+            The actual first test observation will be the first available
+            trading day on or after this date.
         """
 
-        if train_ratio <= 0 or train_ratio >= 1:
-            raise ValueError("train_ratio must be between 0 and 1.")
-
-        self.train_ratio = float(train_ratio)
+        self.test_start_date = pd.to_datetime(test_start_date)
 
     def split(self, data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Splits one time series into train and test samples.
+        Splits one time series into train and test samples using a fixed date.
 
         Parameters
         ----------
@@ -49,16 +51,23 @@ class TimeSeriesSplitter:
 
         data = data.copy().sort_index()
 
-        split_index = int(len(data) * self.train_ratio)
+        if not isinstance(data.index, pd.DatetimeIndex):
+            data.index = pd.to_datetime(data.index)
 
-        if split_index <= 0:
-            raise ValueError("Training sample would be empty.")
+        train_data = data[data.index < self.test_start_date].copy()
+        test_data = data[data.index >= self.test_start_date].copy()
 
-        if split_index >= len(data):
-            raise ValueError("Test sample would be empty.")
+        if train_data.empty:
+            raise ValueError(
+                f"Training sample would be empty. "
+                f"No observations before {self.test_start_date.date()}."
+            )
 
-        train_data = data.iloc[:split_index].copy()
-        test_data = data.iloc[split_index:].copy()
+        if test_data.empty:
+            raise ValueError(
+                f"Test sample would be empty. "
+                f"No observations on or after {self.test_start_date.date()}."
+            )
 
         return train_data, test_data
 

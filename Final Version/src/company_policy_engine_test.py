@@ -286,7 +286,7 @@ class CompanyPolicyEngine:
                 policy_group="conservative_preservation",
                 min_weight_on=0.49,
                 max_weight_on=0.51,
-                entry_threshold=3.0,
+                entry_threshold=4.0,
                 exit_threshold=1.0,
                 signal_window=252,
                 allow_tax_loss_harvesting=True,
@@ -435,10 +435,10 @@ class CompanyPolicyEngine:
         return CompanyPolicy(
             company=company,
             policy_group="defensive_rotation",
-            min_weight_on=0.3,
-            max_weight_on=0.7,
-            entry_threshold=1.50,
-            exit_threshold=0.10,
+            min_weight_on=0.0,
+            max_weight_on=1.0,
+            entry_threshold=1.0,
+            exit_threshold=0.20,
             signal_window=252,
             allow_tax_loss_harvesting=True,
             explanation=(

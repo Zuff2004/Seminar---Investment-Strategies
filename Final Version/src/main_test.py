@@ -117,27 +117,59 @@ def build_train_test_split(
     pair_objects: list,
 ) -> tuple[dict, dict, pd.DataFrame]:
     """
-    Splits all pairs into train and test samples.
+    Splits each company into fixed chronological train and test samples.
 
-    The split is chronological:
-    - train = oldest observations;
-    - test = newest observations.
+    Correct logic:
+    - train = all observations before 2020-01-01;
+    - test  = all observations on or after 2020-01-01.
+
+    This replaces the old train_ratio logic.
     """
-
-    splitter = TimeSeriesSplitter(
-        train_ratio=config.backtest.train_ratio,
-    )
-
-    split_data = splitter.split_pair_objects(pair_objects)
 
     train_data_by_company = {}
     test_data_by_company = {}
+    split_records = []
 
-    for company, content in split_data.items():
-        train_data_by_company[company] = content["train"]
-        test_data_by_company[company] = content["test"]
+    test_start_date = pd.Timestamp(config.backtest.test_start_date)
+    end_date = pd.Timestamp(config.backtest.end_date)
 
-    split_summary = splitter.build_split_summary(split_data)
+    for pair in pair_objects:
+        data = pair.data.copy()
+
+        if data.empty:
+            print(f"Skipping {pair.company}: empty data.")
+            continue
+
+        data = data.sort_index()
+
+        # Keep only data up to configured end date.
+        data = data[data.index <= end_date]
+
+        train_data = data[data.index < test_start_date].copy()
+        test_data = data[data.index >= test_start_date].copy()
+
+        if train_data.empty:
+            print(f"Skipping {pair.company}: no training data before {test_start_date.date()}.")
+            continue
+
+        if test_data.empty:
+            print(f"Skipping {pair.company}: no test data from {test_start_date.date()} onward.")
+            continue
+
+        train_data_by_company[pair.company] = train_data
+        test_data_by_company[pair.company] = test_data
+
+        split_records.append({
+            "company": pair.company,
+            "train_start": train_data.index.min().date(),
+            "train_end": train_data.index.max().date(),
+            "train_observations": len(train_data),
+            "test_start": test_data.index.min().date(),
+            "test_end": test_data.index.max().date(),
+            "test_observations": len(test_data),
+        })
+
+    split_summary = pd.DataFrame(split_records)
 
     return train_data_by_company, test_data_by_company, split_summary
 

@@ -85,15 +85,18 @@ def build_train_test_split(
     pair_objects: list,
 ) -> tuple[dict, dict, pd.DataFrame]:
     """
-    Splits all pairs into train and test samples.
+    Splits all pairs into train and test samples using a fixed date.
 
-    The split is chronological:
-    - train = oldest observations;
-    - test = newest observations.
+    Correct logic:
+    - train = all observations before config.backtest.test_start_date;
+    - test = all observations on or after config.backtest.test_start_date.
+
+    This avoids splitting by proportion and guarantees that the out-of-sample
+    backtest starts in 2020 for all companies with available data.
     """
 
     splitter = TimeSeriesSplitter(
-        train_ratio=config.backtest.train_ratio,
+        test_start_date=config.backtest.test_start_date,
     )
 
     split_data = splitter.split_pair_objects(pair_objects)
@@ -197,6 +200,11 @@ def run_individual_backtests(
     - active ON/PN rotation strategy;
     - passive 50/50 ON/PN buy-and-hold;
     - Ibovespa buy-and-hold.
+
+    Important:
+    test_data_by_company must already contain only the out-of-sample period.
+    Therefore, execution and performance are measured only from the first
+    available trading day on or after config.backtest.test_start_date.
     """
 
     signal_engine = RotationSignalEngine(
@@ -243,6 +251,10 @@ def run_individual_backtests(
 
             test_data = test_data_by_company[company].copy()
             policy = policy_map[company]
+
+            if test_data.empty:
+                print(f"Skipping {company}: empty test data.")
+                continue
 
             # --------------------------------------------------------
             # 1. Generate target ON/PN weights from the spread signal.
@@ -452,13 +464,14 @@ def main():
     Runs the final ON/PN rotation project pipeline.
 
     First-stage outputs:
+    - train-test split summary;
     - universe filter report;
     - company policy map;
     - individual strategy vs 50/50 vs Ibovespa CSVs;
     - individual company plots;
     - final company-level metrics table.
 
-    The aggregate portfolio is intentionally not used yet.
+    The aggregate portfolio is intentionally not used in this main file.
     """
 
     config = ProjectConfig()
@@ -466,6 +479,16 @@ def main():
 
     print("\nStarting final ON/PN rotation project")
     print("=" * 120)
+
+    print("\nBacktest configuration")
+    print("-" * 120)
+    print(f"Data start date: {config.backtest.start_date}")
+    print(f"Data end date:   {config.backtest.end_date}")
+    print(f"Test start date: {config.backtest.test_start_date}")
+    print(
+        "Expected split: train before test_start_date; "
+        "test on or after test_start_date."
+    )
 
     # ------------------------------------------------------------
     # 1. Load and prepare all company pairs.
@@ -499,6 +522,24 @@ def main():
 
     print(f"\nSaved train-test split summary to: {split_summary_path}")
 
+    print("\nTrain-test split summary")
+    print("-" * 120)
+
+    split_summary_to_print = split_summary.copy()
+
+    for column in [
+        "train_start",
+        "train_end",
+        "test_start",
+        "test_end",
+    ]:
+        if column in split_summary_to_print.columns:
+            split_summary_to_print[column] = pd.to_datetime(
+                split_summary_to_print[column]
+            ).dt.date
+
+    print(split_summary_to_print.to_string(index=False))
+
     # ------------------------------------------------------------
     # 3. Apply universe filter using only training data.
     # ------------------------------------------------------------
@@ -527,6 +568,13 @@ def main():
     # ------------------------------------------------------------
     # 5. Run individual test-period backtests.
     # ------------------------------------------------------------
+
+    print("\nRunning individual out-of-sample backtests")
+    print("-" * 120)
+    print(
+        f"Execution period starts on the first available trading day "
+        f"on or after {config.backtest.test_start_date}."
+    )
 
     individual_comparisons, metrics_table = run_individual_backtests(
         config=config,
