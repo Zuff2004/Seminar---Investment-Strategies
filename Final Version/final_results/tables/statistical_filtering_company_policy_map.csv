@@ -1,6 +1,6 @@
 company,policy_group,min_weight_on,max_weight_on,entry_threshold,exit_threshold,signal_window,allow_tax_loss_harvesting,explanation
 BBDC,moderate_rotation,0.0,1.0,1.5,0.5,252,True,Acceptable statistical quality and medium spread opportunity. The strategy uses moderate ON/PN rotation.
-BRAP,medium_quality_defensive_rotation,0.45,0.55,2.0,0.25,252,True,Medium-quality pair with limited statistical evidence. The strategy uses defensive and limited rotation.
+BRAP,high_quality_stable_pair,0.49,0.51,4.0,0.1,252,True,High-quality stable pair. The strategy remains controlled and reacts only to stronger deviations.
 CMIG,conservative_preservation,0.49,0.51,3.0,1.0,252,True,Strong ON/PN relation but weak mean-reversion evidence. The strategy preserves company-level exposure and remains very close to the passive 50/50 allocation.
 GGBR,moderate_rotation,0.0,1.0,1.5,0.5,252,True,Acceptable statistical quality and medium spread opportunity. The strategy uses moderate ON/PN rotation.
 GOAU,moderate_rotation,0.0,1.0,1.5,0.5,252,True,Acceptable statistical quality and medium spread opportunity. The strategy uses moderate ON/PN rotation.

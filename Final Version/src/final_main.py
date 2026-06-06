@@ -2069,22 +2069,102 @@ def build_final_portfolio_plots(
     """
     Builds final portfolio plots.
 
-    PlotBuilder expects:
-    - strategy_portfolio_cumulative_return
-    - benchmark_50_50_portfolio_cumulative_return
-    - ibovespa_portfolio_cumulative_return
+    Final plot:
+    - final strategy portfolio after portfolio-level tax;
+    - final 50/50 benchmark;
+    - Ibovespa benchmark;
+    - statistical equal-weight benchmark.
+
+    Important:
+    This function only creates the final comparison plot.
+    It does not change the backtest, tax logic, metrics,
+    portfolio weights, or benchmark calculations.
     """
 
-    plot_builder = PlotBuilder(
-        plots_dir=config.paths.plots_dir,
+    import matplotlib.pyplot as plt
+
+    if portfolio_comparison is None or portfolio_comparison.empty:
+        print("\nNo final portfolio comparison available for plotting.")
+        return []
+
+    config.paths.plots_dir.mkdir(parents=True, exist_ok=True)
+
+    required_columns = {
+        "strategy_portfolio_cumulative_return": "Final Portfolio Strategy",
+        "benchmark_50_50_portfolio_cumulative_return": "Final 50/50 Benchmark",
+        "ibovespa_portfolio_cumulative_return": "Ibovespa Benchmark",
+        "statistical_equal_weight_portfolio_cumulative_return": "Statistical Equal-Weight Benchmark",
+    }
+
+    for column in required_columns:
+        if column not in portfolio_comparison.columns:
+            raise ValueError(
+                f"Missing required column for final portfolio plot: {column}"
+            )
+
+    plot_data = portfolio_comparison[list(required_columns.keys())].copy()
+    plot_data = plot_data.apply(pd.to_numeric, errors="coerce")
+    plot_data = plot_data.replace([float("inf"), float("-inf")], pd.NA)
+    plot_data = plot_data.ffill().dropna(how="all")
+
+    if plot_data.empty:
+        raise ValueError("Final portfolio plot data is empty after cleaning.")
+
+    # Convert cumulative returns from decimal format to percentage points.
+    plot_data = plot_data * 100.0
+
+    plt.figure(figsize=(14, 8))
+
+    for column, label in required_columns.items():
+        plt.plot(
+            plot_data.index,
+            plot_data[column],
+            linewidth=2.0,
+            label=label,
+        )
+
+    plt.axhline(
+        y=0.0,
+        linewidth=1.0,
+        linestyle="--",
+        alpha=0.6,
     )
 
-    saved_paths = plot_builder.build_portfolio_plots(
-        portfolio_comparison=portfolio_comparison,
+    plt.title(
+        "Final Portfolio vs. Benchmarks",
+        fontsize=16,
+        fontweight="bold",
     )
 
-    print("\nFinal portfolio plots completed.")
-    print(f"Saved portfolio plots: {len(saved_paths)}")
+    plt.xlabel("Date")
+    plt.ylabel("Cumulative return (%)")
+
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    png_output_path = (
+        config.paths.plots_dir
+        / "final_portfolio_vs_benchmarks.png"
+    )
+
+    pdf_output_path = (
+        config.paths.plots_dir
+        / "final_portfolio_vs_benchmarks.pdf"
+    )
+
+    plt.savefig(png_output_path, dpi=300, bbox_inches="tight")
+    plt.savefig(pdf_output_path, bbox_inches="tight")
+    plt.close()
+
+    saved_paths = [
+        png_output_path,
+        pdf_output_path,
+    ]
+
+    print("\nFinal portfolio comparison plot completed.")
+    print(f"Saved final comparison PNG to: {png_output_path}")
+    print(f"Saved final comparison PDF to: {pdf_output_path}")
     print(f"Plots folder: {config.paths.plots_dir}")
 
     return saved_paths
