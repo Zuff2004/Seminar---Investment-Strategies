@@ -101,7 +101,7 @@ class BacktestSettings:
     income_tax_rate: float = 0.15
 
     use_loss_carryforward: bool = True
-    include_transaction_costs_in_tax_basis: bool = True
+    include_transaction_costs_in_tax_basis: bool = False
 
     minimum_rebalance_difference: float = 0.025
 
