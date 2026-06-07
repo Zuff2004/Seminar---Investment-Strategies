@@ -476,8 +476,8 @@ class CompanyPolicyEngine:
             policy_group="defensive_rotation",
             min_weight_on=0.475,
             max_weight_on=0.525,
-            entry_threshold=1.0,
-            exit_threshold=0.5,
+            entry_threshold=1.5,
+            exit_threshold=1.0,
             signal_window=252,
             allow_tax_loss_harvesting=True,
             explanation=(
@@ -547,10 +547,10 @@ class CompanyPolicyEngine:
             max_weight_on=1.0,
 
             # Stronger entry requirement than normal defensive rotation.
-            entry_threshold=1.0,
-            exit_threshold=0.25,
+            entry_threshold=2.0,
+            exit_threshold=0.5, 
 
-            signal_window=252,
+            signal_window=126,
             allow_tax_loss_harvesting=True,
 
             explanation=(

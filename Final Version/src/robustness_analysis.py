@@ -648,6 +648,7 @@ def run_individual_backtests_generic(
         use_loss_carryforward=config.backtest.use_loss_carryforward,
         execution_start_date=config.backtest.test_start_date,
         execution_end_date=config.backtest.end_date,
+        signal_execution_lag=1,
     )
 
     benchmark_builder = BenchmarkBuilder(
@@ -709,7 +710,7 @@ def run_individual_backtests_generic(
             )
 
             # --------------------------------------------------------
-            # 2. Keep exactly the out-of-sample execution dates.
+            # 2. Confirm that the out-of-sample execution dates exist.
             # --------------------------------------------------------
             signal_data_execution = signal_data_full.loc[
                 signal_data_full.index.isin(execution_data.index)
@@ -721,10 +722,16 @@ def run_individual_backtests_generic(
                 continue
 
             # --------------------------------------------------------
-            # 3. Run strategy only in the test/execution period.
+            # 3. Run strategy with full signal history.
             # --------------------------------------------------------
+            # Important for t+1 execution:
+            # The backtester shifts target weights internally before cutting
+            # the execution window. Therefore, we pass signal_data_full here
+            # instead of only signal_data_execution. This allows the first
+            # 2020 trading day to execute the signal observed on the last
+            # available pre-2020 trading day.
             strategy_result = backtester.backtest_pair(
-                data=signal_data_execution,
+                data=signal_data_full,
                 pair_name=company,
             )
 

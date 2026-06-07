@@ -27,6 +27,7 @@ class ShareClassRotationBacktester:
         use_loss_carryforward: bool = True,
         execution_start_date: str | pd.Timestamp | None = "2020-01-01",
         execution_end_date: str | pd.Timestamp | None = "2025-12-31",
+        signal_execution_lag: int = 1,
     ):
         """
         Initializes the backtester.
@@ -59,6 +60,11 @@ class ShareClassRotationBacktester:
 
         execution_end_date:
             Last date included in the measured out-of-sample backtest.
+
+        signal_execution_lag:
+            Number of trading rows between signal generation and trade execution.
+            The default value, 1, means that a signal observed on day t is
+            executed on the next available trading day, t+1.
         """
 
         self.initial_capital = float(initial_capital)
@@ -79,6 +85,10 @@ class ShareClassRotationBacktester:
             if execution_end_date is not None
             else None
         )
+        self.signal_execution_lag = int(signal_execution_lag)
+
+        if self.signal_execution_lag < 0:
+            raise ValueError("signal_execution_lag must be non-negative.")
 
     # ============================================================
     # Main backtest
@@ -131,6 +141,23 @@ class ShareClassRotationBacktester:
 
         if df.empty:
             raise ValueError("Backtest data is empty.")
+
+        # ------------------------------------------------------------
+        # Signal execution lag
+        # ------------------------------------------------------------
+        # Signals are generated from prices observed on day t, but trades
+        # must only be executed on the next available trading day.
+        #
+        # Therefore, target weights and signal labels are shifted forward by
+        # signal_execution_lag rows before the execution-period slice below.
+        # This allows the first execution day in 2020 to use the last available
+        # signal from the training period, if train + test data was provided.
+        #
+        # Prices are NOT shifted. The trade on day t+1 still uses ON[t+1] and
+        # PN[t+1], while the target weights come from the signal observed on t.
+        # ------------------------------------------------------------
+
+        df = self._apply_signal_execution_lag(df)
 
         # ------------------------------------------------------------
         # Critical train/test date correction
@@ -490,6 +517,11 @@ class ShareClassRotationBacktester:
             "z_score",
             "policy_group",
             "policy_explanation",
+            "raw_target_weight_on",
+            "raw_target_weight_pn",
+            "raw_signal",
+            "signal_decision_date",
+            "signal_execution_lag",
         ]
 
         for column in optional_columns:
@@ -497,6 +529,72 @@ class ShareClassRotationBacktester:
                 result[column] = df[column]
 
         return result
+
+    # ============================================================
+    # Signal execution helpers
+    # ============================================================
+
+    def _apply_signal_execution_lag(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Shifts generated signals forward so execution happens after the signal.
+
+        With signal_execution_lag = 1:
+        - the signal and target weights observed on day t are stored as raw
+          signal columns;
+        - the executable target weights used on day t+1 are shifted from t;
+        - prices are not shifted, so trades use day t+1 prices.
+        """
+
+        if self.signal_execution_lag == 0:
+            df["raw_target_weight_on"] = df["target_weight_on"]
+            df["raw_target_weight_pn"] = df["target_weight_pn"]
+
+            if "signal" in df.columns:
+                df["raw_signal"] = df["signal"]
+
+            df["signal_decision_date"] = df.index
+            df["signal_execution_lag"] = 0
+
+            return df
+
+        df = df.copy()
+
+        df["raw_target_weight_on"] = df["target_weight_on"]
+        df["raw_target_weight_pn"] = df["target_weight_pn"]
+
+        if "signal" in df.columns:
+            df["raw_signal"] = df["signal"]
+
+        decision_dates = pd.Series(df.index, index=df.index)
+        df["signal_decision_date"] = decision_dates.shift(
+            self.signal_execution_lag
+        )
+
+        df["target_weight_on"] = df["raw_target_weight_on"].shift(
+            self.signal_execution_lag
+        )
+        df["target_weight_pn"] = df["raw_target_weight_pn"].shift(
+            self.signal_execution_lag
+        )
+
+        if "signal" in df.columns:
+            df["signal"] = df["raw_signal"].shift(self.signal_execution_lag)
+
+        # If there is no previous signal available, keep the initial 50/50
+        # allocation. This can happen on the first rows of the full dataset,
+        # or on the first execution row if only test-period data was supplied.
+        df["target_weight_on"] = df["target_weight_on"].fillna(0.50)
+        df["target_weight_pn"] = df["target_weight_pn"].fillna(0.50)
+
+        if "signal" in df.columns:
+            df["signal"] = df["signal"].fillna("waiting_for_previous_signal")
+
+        df["signal_execution_lag"] = self.signal_execution_lag
+
+        return df
 
     # ============================================================
     # Trade helpers
